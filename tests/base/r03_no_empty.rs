@@ -1,8 +1,9 @@
 mod support;
 
+use std::time::Duration;
 use support::data;
 use support::probe::all_src_rs_files;
-use support::run::run_cli;
+use support::run::{run_cli, run_cli_with_timeout};
 use support::sandbox::Sandbox;
 
 #[test]
@@ -40,7 +41,10 @@ fn rejects_all_empty_commands_and_flags() {
 fn recycle_bin_count_is_non_decreasing() {
     let sb = Sandbox::new("r03_non_decreasing");
     let cwd = sb.work_dir();
-    let before_res = run_cli(&cwd, &["list", "--format", "json"]);
+    // Full Recycle Bin enumeration across 5,500+ pre-existing items can exceed 30s on a cold
+    // Windows filesystem cache before settling to ~2-3s when warm; still strictly bounded.
+    let list_timeout = Duration::from_secs(120);
+    let before_res = run_cli_with_timeout(&cwd, &["list", "--format", "json"], list_timeout);
     assert_eq!(before_res.exit_code, 0);
     let before_count = before_res.json()["summary"]["total"].as_u64().unwrap();
 
@@ -49,7 +53,7 @@ fn recycle_bin_count_is_non_decreasing() {
     let put_res = run_cli(&cwd, &["put", "--format", "json", &arg]);
     assert_eq!(put_res.exit_code, 0);
 
-    let after_res = run_cli(&cwd, &["list", "--format", "json"]);
+    let after_res = run_cli_with_timeout(&cwd, &["list", "--format", "json"], list_timeout);
     assert_eq!(after_res.exit_code, 0);
     let after_count = after_res.json()["summary"]["total"].as_u64().unwrap();
     assert!(

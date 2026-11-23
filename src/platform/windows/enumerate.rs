@@ -7,9 +7,9 @@ use chrono::{DateTime, Local, TimeZone, Utc};
 use sha2::{Digest, Sha256};
 use windows::core::{GUID, PCWSTR};
 use windows::Win32::Foundation::{FILETIME, HWND, PROPERTYKEY, S_OK};
+use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
 use windows::Win32::System::Com::CoTaskMemFree;
-use windows::Win32::System::SystemServices::{SFGAO_FOLDER, SFGAO_STREAM};
-use windows::Win32::System::Variant::{VariantToFileTime, VariantToUInt64, PSTF_UTC};
+use windows::Win32::System::Variant::{VariantToFileTime, VariantToUInt32, VariantToUInt64, PSTF_UTC};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
     FOLDERID_RecycleBinFolder, IShellFolder2, IShellItem, KF_FLAG_DEFAULT, SHCONTF_FOLDERS,
@@ -35,6 +35,11 @@ const PKEY_FILE_NAME: PROPERTYKEY = PROPERTYKEY {
 const PKEY_SIZE: PROPERTYKEY = PROPERTYKEY {
     fmtid: GUID::from_u128(0xb725f130_47ef_101a_a5f1_02608c9eebac),
     pid: 12,
+};
+
+const PKEY_FILE_ATTRIBUTES: PROPERTYKEY = PROPERTYKEY {
+    fmtid: GUID::from_u128(0xb725f130_47ef_101a_a5f1_02608c9eebac),
+    pid: 13,
 };
 
 /// Section 9.4: SHA-256 of (original_path_key, name, deleted_at_filetime, size), first 8 bytes as lowercase hex.
@@ -117,19 +122,18 @@ fn normalize_original_key(path: &str) -> String {
 
 fn read_pidl_kind(rb_folder: &IShellFolder2, pidl: *const ITEMIDLIST) -> EntryKind {
     unsafe {
-        let mut attrs: u32 = SFGAO_FOLDER.0 | SFGAO_STREAM.0;
-        let arr = [pidl];
-        if rb_folder.GetAttributesOf(&arr, &mut attrs).is_ok() {
-            let is_folder = (attrs & SFGAO_FOLDER.0) != 0;
-            let is_stream = (attrs & SFGAO_STREAM.0) != 0;
-            if is_folder && !is_stream {
-                EntryKind::Directory
-            } else {
-                EntryKind::File
+        // Use PKEY_FileAttributes from cached PIDL metadata instead of GetAttributesOf(SFGAO_STREAM)
+        // to avoid triggering Shell extension handlers on archive files during full-bin scans.
+        if let Ok(v) = rb_folder.GetDetailsEx(pidl, &PKEY_FILE_ATTRIBUTES) {
+            if let Ok(attrs) = VariantToUInt32(&v) {
+                return if (attrs & FILE_ATTRIBUTE_DIRECTORY.0) != 0 {
+                    EntryKind::Directory
+                } else {
+                    EntryKind::File
+                };
             }
-        } else {
-            EntryKind::Unknown
         }
+        EntryKind::Unknown
     }
 }
 
