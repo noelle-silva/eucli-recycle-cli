@@ -1,21 +1,25 @@
 ﻿<#
 .SYNOPSIS
-    构建、打包并发布 eucli-recycle 到 GitHub Releases。
+    构建、可选自动递增版本、打包并发布 eucli-recycle 到 GitHub Releases。
 
 .DESCRIPTION
     1. 读取环境变量 EUCLI_RECYCLE_RELEASE_TOKEN（优先当前会话，其次 User 级永久变量）
-    2. 校验工作区干净、版本号一致且对应 tag 尚未存在
-    3. 执行 cargo build --release 与 cargo test（可用 -SkipTests 跳过测试）
+    2. 校验工作区干净；如指定 -Bump (patch|minor|major)，自动递增 Cargo.toml 版本
+    3. 校验目标 tag 尚未存在，执行 cargo build --release 与 cargo test（可用 -SkipTests 跳过）
     4. 在系统临时目录打包 zip、独立 exe 与 SHA256SUMS.txt（不污染仓库目录）
-    5. 打 git tag、推送 tag，并通过 GitHub REST API 创建 Release 并上传全部附件
+    5. 如发生版本递增，自动提交 Cargo.toml/Cargo.lock 并推送 main；随后打 tag、推送 tag、创建 GitHub Release 并上传附件
 
 .EXAMPLE
     .\scripts\release.ps1 -DryRun
+    .\scripts\release.ps1 -Bump patch -DryRun
     .\scripts\release.ps1
-    .\scripts\release.ps1 -Version 0.1.0 -Draft
+    .\scripts\release.ps1 -Bump patch
+    .\scripts\release.ps1 -Bump minor -Draft
 #>
 [CmdletBinding()]
 param(
+    [ValidateSet('', 'patch', 'minor', 'major')]
+    [string]$Bump = "",
     [string]$Version = "",
     [string]$Notes = "",
     [switch]$Draft,
@@ -33,21 +37,48 @@ $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Push-Location $RepoRoot
 
 $StageDir = $null
+$CargoModified = $false
+$CommittedBump = $false
 
 try {
-    # 1. Read version from Cargo.toml
-    $cargoToml = Get-Content -Path (Join-Path $RepoRoot "Cargo.toml") -Raw -Encoding UTF8
-    if ($cargoToml -notmatch '(?m)^version\s*=\s*"([^"]+)"') {
-        throw "无法从 Cargo.toml 解析 version 字段。"
-    }
-    $cargoVersion = $Matches[1]
-    if ([string]::IsNullOrWhiteSpace($Version)) {
-        $Version = $cargoVersion
-    } elseif ($Version -ne $cargoVersion) {
-        throw "传入的 -Version ($Version) 与 Cargo.toml 中的版本 ($cargoVersion) 不一致，请先同步 Cargo.toml。"
+    if (-not [string]::IsNullOrWhiteSpace($Bump) -and -not [string]::IsNullOrWhiteSpace($Version)) {
+        throw "-Bump 与 -Version 不能同时指定，请二选一。"
     }
 
-    $Tag = "v$Version"
+    # 1. Read current version from Cargo.toml
+    $cargoTomlPath = Join-Path $RepoRoot "Cargo.toml"
+    $cargoToml = Get-Content -Path $cargoTomlPath -Raw -Encoding UTF8
+    if ($cargoToml -notmatch '(?m)^version\s*=\s*"(\d+)\.(\d+)\.(\d+)"') {
+        throw "无法从 Cargo.toml 解析 semver 格式的 version 字段（期望 X.Y.Z）。"
+    }
+    $maj = [int]$Matches[1]
+    $min = [int]$Matches[2]
+    $pat = [int]$Matches[3]
+    $cargoVersion = "$maj.$min.$pat"
+
+    $TargetVersion = $cargoVersion
+    $NeedBumpWrite = $false
+
+    if (-not [string]::IsNullOrWhiteSpace($Bump)) {
+        switch ($Bump) {
+            'patch' { $TargetVersion = "$maj.$min.$($pat + 1)" }
+            'minor' { $TargetVersion = "$maj.$($min + 1).0" }
+            'major' { $TargetVersion = "$($maj + 1).0.0" }
+        }
+        $NeedBumpWrite = $true
+        Write-Host "==> 版本递增 ($Bump): $cargoVersion -> $TargetVersion"
+    } elseif (-not [string]::IsNullOrWhiteSpace($Version)) {
+        if ($Version -ne $cargoVersion) {
+            if ($Version -notmatch '^\d+\.\d+\.\d+$') {
+                throw "非法版本号格式：$Version（期望 X.Y.Z）"
+            }
+            $TargetVersion = $Version
+            $NeedBumpWrite = $true
+            Write-Host "==> 指定版本更新: $cargoVersion -> $TargetVersion"
+        }
+    }
+
+    $Tag = "v$TargetVersion"
     Write-Host "==> 准备发布 eucli-recycle $Tag"
 
     # 2. Read Fine-grained PAT (Process first, then User)
@@ -82,17 +113,30 @@ try {
     # 5. Check tag does not already exist locally
     $localTag = & git tag -l $Tag
     if (-not [string]::IsNullOrWhiteSpace(($localTag -join ""))) {
-        throw "本地已存在标签 $Tag，请更新版本号或确认不要重复发布。"
+        throw "本地已存在标签 $Tag，请使用 -Bump patch|minor|major 递增版本号。"
     }
 
-    # 6. Build release binary
+    # 6. Apply version bump to Cargo.toml (skipped in -DryRun)
+    if ($NeedBumpWrite) {
+        if ($DryRun) {
+            Write-Host "==> [DryRun] 将把 Cargo.toml 版本从 $cargoVersion 更新为 $TargetVersion（DryRun 下不改文件）"
+        } else {
+            $regex = New-Object System.Text.RegularExpressions.Regex('(?m)^version\s*=\s*"[^"]+"')
+            $updatedToml = $regex.Replace($cargoToml, "version = `"$TargetVersion`"", 1)
+            [System.IO.File]::WriteAllText($cargoTomlPath, $updatedToml, (New-Object System.Text.UTF8Encoding($false)))
+            $CargoModified = $true
+            Write-Host "==> 已更新 Cargo.toml 版本为 $TargetVersion"
+        }
+    }
+
+    # 7. Build release binary (also refreshes Cargo.lock if version bumped)
     Write-Host "==> 执行 cargo build --release ..."
     & cargo build --release
     if ($LASTEXITCODE -ne 0) {
         throw "cargo build --release 失败（退出码 $LASTEXITCODE）。"
     }
 
-    # 7. Run test suite unless skipped
+    # 8. Run test suite unless skipped
     if (-not $SkipTests) {
         Write-Host "==> 执行 cargo test ..."
         & cargo test
@@ -103,19 +147,20 @@ try {
         Write-Host "==> 已指定 -SkipTests，跳过测试步骤"
     }
 
-    # 8. Verify built executable
+    # 9. Verify built executable
     $ExePath = Join-Path $RepoRoot "target\release\eucli-recycle.exe"
     if (-not (Test-Path $ExePath)) {
         throw "找不到发布产物：$ExePath"
     }
     $verOut = (& $ExePath --version).Trim()
-    if ($LASTEXITCODE -ne 0 -or ($verOut -notlike "*$Version*")) {
-        throw "可执行文件版本校验失败：$verOut（期望包含 $Version）"
+    $expectedBuiltVersion = if ($DryRun -and $NeedBumpWrite) { $cargoVersion } else { $TargetVersion }
+    if ($LASTEXITCODE -ne 0 -or ($verOut -notlike "*$expectedBuiltVersion*")) {
+        throw "可执行文件版本校验失败：$verOut（期望包含 $expectedBuiltVersion）"
     }
     Write-Host "==> 版本校验通过: $verOut"
 
-    # 9. Package inside isolated temp directory
-    $StageDir = Join-Path $env:TEMP ("eucli_recycle_release_" + $Version + "_" + $PID)
+    # 10. Package inside isolated temp directory
+    $StageDir = Join-Path $env:TEMP ("eucli_recycle_release_" + $TargetVersion + "_" + $PID)
     $BundleDir = Join-Path $StageDir ("eucli-recycle-$Tag-windows-x86_64")
     New-Item -ItemType Directory -Force -Path $BundleDir | Out-Null
 
@@ -131,8 +176,23 @@ try {
     $ExeCopyPath = Join-Path $StageDir $ExeAssetName
     Copy-Item -Path $ExePath -Destination $ExeCopyPath
 
-    $zipHash = (Get-FileHash -Path $ZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    $exeHash = (Get-FileHash -Path $ExeCopyPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    function Get-Sha256Hex([string]$FilePath) {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $fs = [System.IO.File]::OpenRead($FilePath)
+            try {
+                $hashBytes = $sha.ComputeHash($fs)
+                return ([System.BitConverter]::ToString($hashBytes) -replace '-', '').ToLowerInvariant()
+            } finally {
+                $fs.Dispose()
+            }
+        } finally {
+            $sha.Dispose()
+        }
+    }
+
+    $zipHash = Get-Sha256Hex $ZipPath
+    $exeHash = Get-Sha256Hex $ExeCopyPath
 
     $SumsName = "SHA256SUMS.txt"
     $SumsPath = Join-Path $StageDir $SumsName
@@ -163,11 +223,28 @@ $exeHash  $ExeAssetName
 
     if ($DryRun) {
         Write-Host ""
-        Write-Host "==> [DryRun] 检查与打包全部通过，未创建 tag、未调用 GitHub 写入接口。"
+        Write-Host "==> [DryRun] 检查与打包全部通过，未改文件、未提交、未创建 tag、未调用 GitHub 写入接口。"
         return
     }
 
-    # 10. Create and push annotated git tag
+    # 11. Commit version bump (if any) and push current branch
+    $currentBranch = (& git rev-parse --abbrev-ref HEAD).Trim()
+    if ($CargoModified) {
+        Write-Host "==> 提交版本更新 commit (chore: release $Tag) ..."
+        & git add Cargo.toml Cargo.lock
+        if ($LASTEXITCODE -ne 0) { throw "git add 失败。" }
+        & git commit -m "chore: release $Tag"
+        if ($LASTEXITCODE -ne 0) { throw "git commit 失败。" }
+        $CommittedBump = $true
+    }
+
+    Write-Host "==> 推送分支 $currentBranch 到 origin ..."
+    & git push origin $currentBranch
+    if ($LASTEXITCODE -ne 0) {
+        throw "推送分支 $currentBranch 失败。"
+    }
+
+    # 12. Create and push annotated git tag
     Write-Host "==> 创建并推送标签 $Tag ..."
     & git tag -a $Tag -m "Release $Tag"
     if ($LASTEXITCODE -ne 0) {
@@ -178,7 +255,7 @@ $exeHash  $ExeAssetName
         throw "推送 git tag 到 origin 失败。"
     }
 
-    # 11. Create GitHub Release via REST API
+    # 13. Create GitHub Release via REST API
     $headers = @{
         "Authorization"        = "Bearer $Token"
         "Accept"               = "application/vnd.github+json"
@@ -207,7 +284,7 @@ $exeHash  $ExeAssetName
 
     $uploadBase = ($release.upload_url -replace '\{\?name,label\}$', '')
 
-    # 12. Upload release assets
+    # 14. Upload release assets
     $assets = @(
         @{ Path = $ZipPath;     Name = $ZipName;      ContentType = "application/zip" },
         @{ Path = $ExeCopyPath; Name = $ExeAssetName; ContentType = "application/octet-stream" },
@@ -228,6 +305,14 @@ $exeHash  $ExeAssetName
     Write-Host ""
     Write-Host "==> 发布成功！"
     Write-Host "    Release 页面: $($release.html_url)"
+}
+catch {
+    # If Cargo.toml/Cargo.lock were edited before commit failed, restore cleanly
+    if ($CargoModified -and -not $CommittedBump) {
+        & git checkout -- Cargo.toml Cargo.lock 2>$null
+        Write-Host "==> 已回滚未提交的 Cargo.toml / Cargo.lock 版本改动。"
+    }
+    throw
 }
 finally {
     if ($StageDir -and (Test-Path $StageDir)) {
