@@ -1,0 +1,133 @@
+[package]
+name = "eucli-recycle"
+version = "0.1.0"
+edition = "2021"
+description = "Safe Windows command-line interface to the system Recycle Bin"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+hex = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+toml = "0.9"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Console",
+    "Win32_System_Ole",
+    "Win32_System_SystemServices",
+    "Win32_System_Variant",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+] }
+windows-core = "0.61"
+
+[[test]]
+name = "r01_recycle_only"
+path = "tests/base/r01_recycle_only.rs"
+
+[[test]]
+name = "r02_no_permanent_delete"
+path = "tests/base/r02_no_permanent_delete.rs"
+
+[[test]]
+name = "r03_no_empty"
+path = "tests/base/r03_no_empty.rs"
+
+[[test]]
+name = "r04_no_interaction"
+path = "tests/base/r04_no_interaction.rs"
+
+[[test]]
+name = "r05_bin_capacity_untouched"
+path = "tests/base/r05_bin_capacity_untouched.rs"
+
+[[test]]
+name = "r06_absolute_only"
+path = "tests/base/r06_absolute_only.rs"
+
+[[test]]
+name = "r07_no_ambiguity"
+path = "tests/base/r07_no_ambiguity.rs"
+
+[[test]]
+name = "r08_resolve_once"
+path = "tests/base/r08_resolve_once.rs"
+
+[[test]]
+name = "r09_blacklist"
+path = "tests/base/r09_blacklist.rs"
+
+[[test]]
+name = "r10_links_not_followed"
+path = "tests/base/r10_links_not_followed.rs"
+
+[[test]]
+name = "r11_dir_needs_flag"
+path = "tests/base/r11_dir_needs_flag.rs"
+
+[[test]]
+name = "r12_all_or_nothing_check"
+path = "tests/base/r12_all_or_nothing_check.rs"
+
+[[test]]
+name = "r13_stop_on_failure"
+path = "tests/base/r13_stop_on_failure.rs"
+
+[[test]]
+name = "r14_params_are_real"
+path = "tests/base/r14_params_are_real.rs"
+
+[[test]]
+name = "r15_verify_before_success"
+path = "tests/base/r15_verify_before_success.rs"
+
+[[test]]
+name = "r16_report_fidelity"
+path = "tests/base/r16_report_fidelity.rs"
+
+[[test]]
+name = "r17_single_source_of_truth"
+path = "tests/base/r17_single_source_of_truth.rs"
+
+[[test]]
+name = "r18_restore_rules"
+path = "tests/base/r18_restore_rules.rs"
+
+[[test]]
+name = "r19_config_live_reload"
+path = "tests/base/r19_config_live_reload.rs"
+
+[[test]]
+name = "r20_no_third_party_bin"
+path = "tests/base/r20_no_third_party_bin.rs"
+
+[[test]]
+name = "r21_no_silent_fallback"
+path = "tests/base/r21_no_silent_fallback.rs"
+
+[[test]]
+name = "r22_batch_relations"
+path = "tests/base/r22_batch_relations.rs"
+
+[[test]]
+name = "r23_determinism"
+path = "tests/base/r23_determinism.rs"
+
+[[test]]
+name = "r24_no_direct_bin_access"
+path = "tests/base/r24_no_direct_bin_access.rs"
+
+[[test]]
+name = "crosscut_public_api"
+path = "tests/base/crosscut_public_api.rs"
+
+[[test]]
+name = "crosscut_unsupported_platform"
+path = "tests/base/crosscut_unsupported_platform.rs"
