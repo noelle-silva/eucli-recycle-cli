@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use serde_json::Value;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -104,6 +104,77 @@ pub fn run_cli_with_options(
     RunResult {
         exit_code: status.code().unwrap_or(-1),
         stdout: String::from_utf8(stdout_bytes).expect("stdout must be valid UTF-8 (R23)"),
+        stderr: String::from_utf8_lossy(&stderr_bytes).to_string(),
+        elapsed: start.elapsed(),
+    }
+}
+
+/// Runs the CLI with an open piped stdin populated with `stdin_data` (or kept open briefly)
+/// to prove the tool never reads stdin and never hangs in pipelines (R4 / R23).
+pub fn run_cli_with_piped_stdin(
+    cwd: &Path,
+    args: &[&str],
+    stdin_data: &[u8],
+    timeout: Duration,
+) -> RunResult {
+    let mut cmd = Command::new(bin_path());
+    cmd.current_dir(cwd)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let start = Instant::now();
+    let mut child = cmd.spawn().expect("spawn eucli-recycle binary");
+
+    if let Some(mut stdin_pipe) = child.stdin.take() {
+        let data = stdin_data.to_vec();
+        std::thread::spawn(move || {
+            let _ = stdin_pipe.write_all(&data);
+            let _ = stdin_pipe.flush();
+            // Intentionally hold pipe open briefly before closing to ensure CLI doesn't wait for EOF
+            std::thread::sleep(Duration::from_millis(300));
+            drop(stdin_pipe);
+        });
+    }
+
+    let mut stdout_pipe = child.stdout.take().expect("stdout pipe");
+    let mut stderr_pipe = child.stderr.take().expect("stderr pipe");
+
+    let t_out = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout_pipe.read_to_end(&mut buf);
+        buf
+    });
+    let t_err = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr_pipe.read_to_end(&mut buf);
+        buf
+    });
+
+    let status = loop {
+        match child.try_wait().expect("try_wait") {
+            Some(st) => break st,
+            None => {
+                if start.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!(
+                        "TIMEOUT after {:?} running {:?} with piped stdin — 疑似读取了 stdin 或挂起",
+                        timeout, args
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    };
+
+    let stdout_bytes = t_out.join().expect("join stdout thread");
+    let stderr_bytes = t_err.join().expect("join stderr thread");
+
+    RunResult {
+        exit_code: status.code().unwrap_or(-1),
+        stdout: String::from_utf8(stdout_bytes).expect("stdout must be valid UTF-8"),
         stderr: String::from_utf8_lossy(&stderr_bytes).to_string(),
         elapsed: start.elapsed(),
     }

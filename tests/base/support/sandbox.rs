@@ -17,7 +17,10 @@ impl Sandbox {
         let base = std::env::var("EUCLI_RECYCLE_TEST_ROOT")
             .map(PathBuf::from)
             .unwrap_or_else(|_| std::env::temp_dir().join("eucli-recycle-test-sandboxes"));
+        Self::new_under(&base, label)
+    }
 
+    pub fn new_under(base: &Path, label: &str) -> Self {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let pid = std::process::id();
         let ts = std::time::SystemTime::now()

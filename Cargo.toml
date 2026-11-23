@@ -131,3 +131,35 @@ path = "tests/base/crosscut_public_api.rs"
 [[test]]
 name = "crosscut_unsupported_platform"
 path = "tests/base/crosscut_unsupported_platform.rs"
+
+[[test]]
+name = "s01_special_attributes_and_names"
+path = "tests/scenarios/s01_special_attributes_and_names.rs"
+
+[[test]]
+name = "s02_scale_and_deep_trees"
+path = "tests/scenarios/s02_scale_and_deep_trees.rs"
+
+[[test]]
+name = "s03_mixed_batch_recovery"
+path = "tests/scenarios/s03_mixed_batch_recovery.rs"
+
+[[test]]
+name = "s04_same_name_repeated_cycles"
+path = "tests/scenarios/s04_same_name_repeated_cycles.rs"
+
+[[test]]
+name = "s05_list_filters_and_pagination"
+path = "tests/scenarios/s05_list_filters_and_pagination.rs"
+
+[[test]]
+name = "s06_config_and_restore_protection"
+path = "tests/scenarios/s06_config_and_restore_protection.rs"
+
+[[test]]
+name = "s07_cross_volume_and_links_matrix"
+path = "tests/scenarios/s07_cross_volume_and_links_matrix.rs"
+
+[[test]]
+name = "s08_shell_and_automation_integration"
+path = "tests/scenarios/s08_shell_and_automation_integration.rs"
